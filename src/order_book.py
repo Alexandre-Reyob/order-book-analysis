@@ -187,6 +187,7 @@ class LOBEvent:
     quantity:   float
     order_id:   Optional[int]  = None
     trades:     List[Trade]    = field(default_factory=list)
+    mid:        Optional[float] = None   # latent mid just before the event
 
 
 class LOBGenerator:
@@ -194,9 +195,15 @@ class LOBGenerator:
     DIM   = 6
     NAMES = ["limit_bid", "limit_ask", "mkt_buy", "mkt_sell", "cancel_bid", "cancel_ask"]
 
+    # impact: permanent price impact per unit of market order volume (Kyle-style).
+    # impact=0 -> the latent mid is a pure random walk, independent of order flow
+    # (no adverse selection for a liquidity provider). impact>0 -> buys push it up, sells down.
     def __init__(self, mu=None, alpha=None, beta=None, mid0=100.0,
-                 sigma_mid=0.02, tick_size=0.01, qty_mean=10.0, depth_scale=0.05, seed=42):
+                 sigma_mid=0.02, tick_size=0.01, qty_mean=10.0, depth_scale=0.05,
+                 impact=0.0, seed=42):
         self.rng = np.random.default_rng(seed)
+        self.mid0   = mid0
+        self.impact = impact
         n = self.DIM
 
         if mu is None:
@@ -250,7 +257,7 @@ class LOBGenerator:
 
     def reset(self, mid0=None, seed=None):
         if seed is not None: self.rng = np.random.default_rng(seed)
-        if mid0 is not None: self.mid = mid0
+        self.mid = mid0 if mid0 is not None else self.mid0
         self.lob = LimitOrderBook(self.tick_size)
         self._seed_book()
         self._t       = 0.0
@@ -301,12 +308,16 @@ class LOBGenerator:
             return LOBEvent(t, name, p, qty, oid, tr)
         elif name == "mkt_buy":
             qty = max(self.rng.exponential(self.qty_mean * 0.5), 1.0)
+            mid_before = self.mid
             oid, tr = self.lob.submit_market(Side.BID, qty, t)
-            return LOBEvent(t, name, None, qty, oid, tr)
+            self.mid += self.impact * qty
+            return LOBEvent(t, name, None, qty, oid, tr, mid=mid_before)
         elif name == "mkt_sell":
             qty = max(self.rng.exponential(self.qty_mean * 0.5), 1.0)
+            mid_before = self.mid
             oid, tr = self.lob.submit_market(Side.ASK, qty, t)
-            return LOBEvent(t, name, None, qty, oid, tr)
+            self.mid -= self.impact * qty
+            return LOBEvent(t, name, None, qty, oid, tr, mid=mid_before)
         elif name in ("cancel_bid", "cancel_ask"):
             side  = Side.BID if name == "cancel_bid" else Side.ASK
             cands = [oid for oid, o in self.lob._orders.items()

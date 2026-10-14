@@ -109,13 +109,14 @@ def calibrate(times: np.ndarray, T: float, method: str = "L-BFGS-B",
         warnings.warn("few events — estimates may be unreliable")
 
     lam_hat = max(n / T, 1e-6)
-    # mu bounded by empirical rate, alpha < 1 (stationarity), beta à la louche
+    # optimise over (mu, n, beta) with alpha = n * beta: stationarity is n = alpha/beta < 1,
+    # not alpha < 1. n is also the best-identified quantity, which helps conditioning.
     bounds  = [(1e-6, 10 * lam_hat), (1e-6, 0.999), (1e-4, 100.0)]
 
     def neg_ll(params):
-        mu, alpha, beta = params
-        if mu <= 0 or alpha < 0 or beta <= 0: return 1e10
-        ll = HawkesProcess(mu, alpha, beta).log_likelihood(times, T)
+        mu, br, beta = params
+        if mu <= 0 or br < 0 or beta <= 0: return 1e10
+        ll = HawkesProcess(mu, br * beta, beta).log_likelihood(times, T)
         return -ll if np.isfinite(ll) else 1e10
 
     best_res, best_val = None, np.inf
@@ -140,7 +141,8 @@ def calibrate(times: np.ndarray, T: float, method: str = "L-BFGS-B",
     if best_res is None:
         return CalibrationResult(np.nan, np.nan, np.nan, -np.inf, n, T, False, "optimization failed")
 
-    mu_h, alpha_h, beta_h = best_res.x
+    mu_h, br_h, beta_h = best_res.x
+    alpha_h = br_h * beta_h
     return CalibrationResult(
         mu=float(mu_h), alpha=float(alpha_h), beta=float(beta_h),
         log_likelihood=float(-best_val), n_events=n, T=T,
